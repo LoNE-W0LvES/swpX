@@ -89,13 +89,14 @@ void setup() {
     displayManager.begin();
     buttonHandler.begin();
     
-    // ✅ FIX: Check setup status ONCE and show appropriate message
+    // ✅ FIX: Check setup status ONCE and set appropriate state
     if (storage.isFirstTimeSetup()) {
         systemState = STATE_FIRST_TIME_SETUP;
         #if ENABLE_SERIAL_DEBUG
         Serial.println("First-time setup required");
         #endif
-        displayManager.showMessage("Setup", "First Time Setup", 2000);
+        // Set display to setup screen immediately to prevent flickering
+        displayManager.showSetupScreen("Connect to WiFi:\n" + String(AP_SSID) + "\nPassword: " + String(AP_PASSWORD));
     } else {
         systemState = STATE_NORMAL_OPERATION;
         displayManager.showMessage("System", "Initializing...", 2000);
@@ -229,13 +230,13 @@ void initializeSystem() {
 void firstTimeSetup() {
     // ✅ FIX: Static variable to ensure AP is started only once
     static bool apStarted = false;
-    static unsigned long lastDisplayUpdate = 0;
-    
+    static bool displayInitialized = false;
+
     // Start AP mode for configuration (only once)
     if (!apStarted) {
         wifiManager.startAP();
         apStarted = true;
-        
+
         #if ENABLE_SERIAL_DEBUG
         Serial.println("=================================");
         Serial.println("FIRST TIME SETUP MODE");
@@ -248,16 +249,16 @@ void firstTimeSetup() {
         Serial.println(wifiManager.getAPIP());
         Serial.println("=================================");
         #endif
-        
+
         // Start web server for setup
         if (!webServer.isRunning()) {
             webServer.begin(&storage, &calculator, &pumpController, &waterTracker);
         }
     }
-    
-    // ✅ FIX: Update display only every 5 seconds to prevent flickering
-    if (millis() - lastDisplayUpdate > 5000) {
-        lastDisplayUpdate = millis();
+
+    // ✅ FIX: Show setup screen immediately on first call, then keep it displayed
+    if (!displayInitialized) {
+        displayInitialized = true;
         displayManager.showSetupScreen("Connect to WiFi:\n" + String(AP_SSID) + "\nPassword: " + String(AP_PASSWORD));
     }
     
