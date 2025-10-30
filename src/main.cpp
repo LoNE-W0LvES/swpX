@@ -118,11 +118,17 @@ void setup() {
         #endif
     }
 
-    // ✅ FIX: Check setup status ONCE and set appropriate state
-    if (storage.isFirstTimeSetup()) {
+    // ✅ FIX: Check if setup is needed
+    // Setup only needed if no WiFi credentials AND first time
+    String ssid, password;
+    bool hasWiFiCreds = storage.loadWiFiCredentials(ssid, password);
+    bool isFirstTime = storage.isFirstTimeSetup();
+
+    // Only enter setup mode if truly needed (no WiFi AND first time)
+    if (isFirstTime && !hasWiFiCreds) {
         systemState = STATE_FIRST_TIME_SETUP;
         #if ENABLE_SERIAL_DEBUG
-        Serial.println("First-time setup required");
+        Serial.println("First-time setup required - No WiFi credentials");
         #endif
         // Set display to setup screen immediately to prevent flickering
         #if SIMULATION_MODE
@@ -131,6 +137,16 @@ void setup() {
         displayManager.showSetupScreen("Connect to WiFi:\n" + String(AP_SSID) + "\nPassword: " + String(AP_PASSWORD));
         #endif
     } else {
+        // Have WiFi credentials or not first time - skip setup, go straight to operation
+        if (isFirstTime && hasWiFiCreds) {
+            #if ENABLE_SERIAL_DEBUG
+            Serial.println("WiFi credentials found - skipping first-time setup");
+            Serial.print("Will connect to: ");
+            Serial.println(ssid);
+            #endif
+            // Mark setup as complete since we have WiFi
+            storage.markSetupComplete();
+        }
         systemState = STATE_NORMAL_OPERATION;
         displayManager.showMessage("System", "Initializing...", 2000);
         // Don't block - let loop handle initialization

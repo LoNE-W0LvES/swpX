@@ -3,7 +3,10 @@
 #define CONFIG_H
 
 // ==================== SIMULATION MODE ====================
-// Enable this when running in Wokwi simulator (disables AP mode only)
+// Enable this when running in Wokwi simulator
+// - Disables AP mode (not supported in Wokwi)
+// - Defaults to "Wokwi-GUEST" WiFi if no credentials saved
+// - Skips first-time setup if WiFi credentials exist
 // Note: Wokwi supports WiFi connection to "Wokwi-GUEST" but not AP mode
 #define SIMULATION_MODE true               // Set to false for real hardware
 
