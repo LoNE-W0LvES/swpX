@@ -96,7 +96,11 @@ void setup() {
         Serial.println("First-time setup required");
         #endif
         // Set display to setup screen immediately to prevent flickering
+        #if SIMULATION_MODE
+        displayManager.showSetupScreen("SIMULATION\nAccess web UI\nfor setup");
+        #else
         displayManager.showSetupScreen("Connect to WiFi:\n" + String(AP_SSID) + "\nPassword: " + String(AP_PASSWORD));
+        #endif
     } else {
         systemState = STATE_NORMAL_OPERATION;
         displayManager.showMessage("System", "Initializing...", 2000);
@@ -149,25 +153,25 @@ void initializeSystem() {
     wifiManager.begin();
     if (!currentConfig.firstTimeSetup) {
         displayManager.showMessage("WiFi", "Connecting...", 2000);
-        
+
         #if IOT_ENABLED
         if (wifiManager.connectToSavedWiFi()) {
             displayManager.showMessage("WiFi", "Connected!", 2000);
-            
+
             // Start mDNS
             wifiManager.startMDNS("waterpump");
-            
+
             // Try to initialize IoT client (will fail gracefully if server unavailable)
             if (iotClient.begin()) {
                 displayManager.showMessage("Cloud", "Connected!", 2000);
-                
+
                 // Set up callbacks
                 iotClient.setCommandCallback(handleIoTCommands);
                 iotClient.setConfigCallback(handleIoTConfig);
-                
+
                 // Initialize sync manager
                 syncManager.begin(&storage, &iotClient);
-                
+
                 // Initial config sync (optional, continues if fails)
                 syncManager.syncConfig();
             } else {
@@ -233,19 +237,24 @@ void firstTimeSetup() {
 
     // Start AP mode for configuration (only once)
     if (!apStarted) {
-        wifiManager.startAP();
         apStarted = true;
 
         #if ENABLE_SERIAL_DEBUG
         Serial.println("=================================");
         Serial.println("FIRST TIME SETUP MODE");
-        Serial.println("=================================");
+        #if SIMULATION_MODE
+        Serial.println("MODE: SIMULATION");
+        Serial.println("AP mode disabled (not supported in Wokwi)");
+        Serial.println("Access web interface via network");
+        #else
         Serial.print("Connect to WiFi AP: ");
         Serial.println(AP_SSID);
         Serial.print("Password: ");
         Serial.println(AP_PASSWORD);
         Serial.print("Then open: http://");
         Serial.println(wifiManager.getAPIP());
+        wifiManager.startAP();
+        #endif
         Serial.println("=================================");
         #endif
 
@@ -258,7 +267,11 @@ void firstTimeSetup() {
     // ✅ FIX: Show setup screen immediately on first call, then keep it displayed
     if (!displayInitialized) {
         displayInitialized = true;
+        #if SIMULATION_MODE
+        displayManager.showSetupScreen("SIMULATION\nAccess web UI\nfor setup");
+        #else
         displayManager.showSetupScreen("Connect to WiFi:\n" + String(AP_SSID) + "\nPassword: " + String(AP_PASSWORD));
+        #endif
     }
     
     // ✅ FIX: Check setup status only periodically (every 2 seconds)

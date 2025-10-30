@@ -16,6 +16,7 @@ WebServerLocal::WebServerLocal()
 
 bool WebServerLocal::begin(StorageManager* storage, TankCalculator* calculator,
                            PumpController* pump, WaterTracker* tracker) {
+    #if !SIMULATION_MODE
     // Check if WiFi is available (either connected to network OR in AP mode)
     bool isAPMode = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA);
     if (WiFi.status() != WL_CONNECTED && !isAPMode) {
@@ -24,6 +25,7 @@ bool WebServerLocal::begin(StorageManager* storage, TankCalculator* calculator,
         #endif
         return false;
     }
+    #endif
     
     _storage = storage;
     _calculator = calculator;
@@ -50,6 +52,9 @@ bool WebServerLocal::begin(StorageManager* storage, TankCalculator* calculator,
     #if ENABLE_SERIAL_DEBUG
     Serial.println("=================================");
     Serial.println("WEB SERVER STARTED");
+    #if SIMULATION_MODE
+    Serial.println("MODE: SIMULATION (AP disabled)");
+    #endif
     Serial.print("Access at: http://");
     if (WiFi.status() == WL_CONNECTED) {
         Serial.print(WiFi.localIP());
