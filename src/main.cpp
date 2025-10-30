@@ -88,7 +88,16 @@ void setup() {
     sensor.begin();
     displayManager.begin();
     buttonHandler.begin();
-    
+
+    // Initialize WiFi manager early (needed for TCP/IP stack even in simulation)
+    #if ENABLE_SERIAL_DEBUG
+    #if SIMULATION_MODE
+    Serial.println("Initializing WiFi (TCP/IP stack for web server)...");
+    #endif
+    #endif
+    wifiManager.begin();
+    delay(100); // Brief delay to ensure TCP/IP stack is ready
+
     // ✅ FIX: Check setup status ONCE and set appropriate state
     if (storage.isFirstTimeSetup()) {
         systemState = STATE_FIRST_TIME_SETUP;
@@ -148,9 +157,8 @@ void initializeSystem() {
     // Load configuration
     currentConfig = storage.loadTankConfig();
     calculator.setTankConfig(currentConfig);
-    
-    // Initialize WiFi (OPTIONAL - system works without it)
-    wifiManager.begin();
+
+    // WiFi manager already initialized in setup(), now configure it
     if (!currentConfig.firstTimeSetup) {
         displayManager.showMessage("WiFi", "Connecting...", 2000);
 
