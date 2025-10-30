@@ -69,6 +69,7 @@ private:
     unsigned long _messageEndTime;
     String _messageTitle;
     String _messageText;
+    String _setupPrompt;
     
     void drawMainScreen();
     void drawStatusScreen();

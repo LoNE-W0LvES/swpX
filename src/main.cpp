@@ -271,10 +271,12 @@ void firstTimeSetup() {
             #if ENABLE_SERIAL_DEBUG
             Serial.println("Setup completed! Transitioning to normal operation...");
             #endif
-            
+
+            // Switch back to main screen and show completion message
+            displayManager.setScreen(SCREEN_MAIN);
             displayManager.showMessage("Setup", "Complete!", 2000);
             delay(2000);
-            
+
             systemState = STATE_NORMAL_OPERATION;
             initializeSystem();
         }
