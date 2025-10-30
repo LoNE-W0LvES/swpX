@@ -14,10 +14,11 @@ WebServerLocal::WebServerLocal()
       _maxInflow(0) {
 }
 
-bool WebServerLocal::begin(StorageManager* storage, TankCalculator* calculator, 
+bool WebServerLocal::begin(StorageManager* storage, TankCalculator* calculator,
                            PumpController* pump, WaterTracker* tracker) {
-    // Check if WiFi is available
-    if (WiFi.status() != WL_CONNECTED && WiFi.softAPgetStationNum() == 0) {
+    // Check if WiFi is available (either connected to network OR in AP mode)
+    bool isAPMode = (WiFi.getMode() == WIFI_AP || WiFi.getMode() == WIFI_AP_STA);
+    if (WiFi.status() != WL_CONNECTED && !isAPMode) {
         #if ENABLE_SERIAL_DEBUG
         Serial.println("Web server NOT started - No WiFi connection");
         #endif
@@ -45,9 +46,10 @@ bool WebServerLocal::begin(StorageManager* storage, TankCalculator* calculator,
     // Start server
     _server->begin();
     _isRunning = true;
-    
+
     #if ENABLE_SERIAL_DEBUG
-    Serial.println("Web server started successfully");
+    Serial.println("=================================");
+    Serial.println("WEB SERVER STARTED");
     Serial.print("Access at: http://");
     if (WiFi.status() == WL_CONNECTED) {
         Serial.print(WiFi.localIP());
@@ -56,6 +58,7 @@ bool WebServerLocal::begin(StorageManager* storage, TankCalculator* calculator,
     }
     Serial.print(":");
     Serial.println(WEBSERVER_PORT);
+    Serial.println("=================================");
     #endif
     
     return true;

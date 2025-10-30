@@ -100,8 +100,7 @@ void setup() {
     } else {
         systemState = STATE_NORMAL_OPERATION;
         displayManager.showMessage("System", "Initializing...", 2000);
-        delay(2000);
-        initializeSystem();
+        // Don't block - let loop handle initialization
     }
 }
 
@@ -276,18 +275,21 @@ void firstTimeSetup() {
             // Switch back to main screen and show completion message
             displayManager.setScreen(SCREEN_MAIN);
             displayManager.showMessage("Setup", "Complete!", 2000);
-            delay(2000);
 
             systemState = STATE_NORMAL_OPERATION;
-            initializeSystem();
+            // initializeSystem() will be called by normalOperation() on next loop
         }
     }
-    
-    delay(100); // Small delay to prevent tight loop
 }
 
 // ==================== NORMAL OPERATION ====================
 void normalOperation() {
+    // Initialize system on first run
+    if (!systemInitialized) {
+        initializeSystem();
+        return; // Skip rest of loop during initialization
+    }
+
     // Read sensor periodically
     if (millis() - lastSensorRead > SENSOR_SAMPLE_INTERVAL_MS) {
         readSensor();
@@ -335,8 +337,6 @@ void normalOperation() {
     if (mlPredictor.isEnabled()) {
         mlPredictor.loop();
     }
-    
-    delay(10); // Small delay to prevent watchdog issues
 }
 
 // ==================== CONFIGURATION MODE ====================
@@ -378,24 +378,27 @@ void configMode() {
         // Factory reset
         displayManager.showMessage("Reset", "Resetting...", 3000);
         storage.factoryReset();
-        delay(3000);
+        delay(1000); // Brief delay before restart
         ESP.restart();
     }
-    
-    delay(50);
 }
 
 // ==================== BUTTON EVENT HANDLING ====================
 void handleButtonEvents() {
     ButtonEvent event = buttonHandler.getEvent();
-    
+
     if (event == BTN_NONE) return;
-    
+
+    // Don't allow screen switching during first-time setup
+    if (systemState == STATE_FIRST_TIME_SETUP) {
+        return;
+    }
+
     switch (event) {
         case BTN_LEFT_PRESS:
             displayManager.previousScreen();
             break;
-            
+
         case BTN_RIGHT_PRESS:
             displayManager.nextScreen();
             break;
