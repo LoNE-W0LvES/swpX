@@ -89,18 +89,22 @@ void setup() {
     displayManager.begin();
     buttonHandler.begin();
     
-    // ✅ FIX: Check setup status ONCE and show appropriate message
+    // ✅ FIX: Check setup status ONCE and set appropriate state
     if (storage.isFirstTimeSetup()) {
         systemState = STATE_FIRST_TIME_SETUP;
         #if ENABLE_SERIAL_DEBUG
         Serial.println("First-time setup required");
         #endif
-        displayManager.showMessage("Setup", "First Time Setup", 2000);
+        // Set display to setup screen immediately to prevent flickering
+        #if SIMULATION_MODE
+        displayManager.showSetupScreen("SIMULATION\nAccess web UI\nfor setup");
+        #else
+        displayManager.showSetupScreen("Connect to WiFi:\n" + String(AP_SSID) + "\nPassword: " + String(AP_PASSWORD));
+        #endif
     } else {
         systemState = STATE_NORMAL_OPERATION;
         displayManager.showMessage("System", "Initializing...", 2000);
-        delay(2000);
-        initializeSystem();
+        // Don't block - let loop handle initialization
     }
 }
 
@@ -149,25 +153,25 @@ void initializeSystem() {
     wifiManager.begin();
     if (!currentConfig.firstTimeSetup) {
         displayManager.showMessage("WiFi", "Connecting...", 2000);
-        
+
         #if IOT_ENABLED
         if (wifiManager.connectToSavedWiFi()) {
             displayManager.showMessage("WiFi", "Connected!", 2000);
-            
+
             // Start mDNS
             wifiManager.startMDNS("waterpump");
-            
+
             // Try to initialize IoT client (will fail gracefully if server unavailable)
             if (iotClient.begin()) {
                 displayManager.showMessage("Cloud", "Connected!", 2000);
-                
+
                 // Set up callbacks
                 iotClient.setCommandCallback(handleIoTCommands);
                 iotClient.setConfigCallback(handleIoTConfig);
-                
+
                 // Initialize sync manager
                 syncManager.begin(&storage, &iotClient);
-                
+
                 // Initial config sync (optional, continues if fails)
                 syncManager.syncConfig();
             } else {
@@ -229,36 +233,45 @@ void initializeSystem() {
 void firstTimeSetup() {
     // ✅ FIX: Static variable to ensure AP is started only once
     static bool apStarted = false;
-    static unsigned long lastDisplayUpdate = 0;
-    
+    static bool displayInitialized = false;
+
     // Start AP mode for configuration (only once)
     if (!apStarted) {
-        wifiManager.startAP();
         apStarted = true;
-        
+
         #if ENABLE_SERIAL_DEBUG
         Serial.println("=================================");
         Serial.println("FIRST TIME SETUP MODE");
-        Serial.println("=================================");
+        #if SIMULATION_MODE
+        Serial.println("MODE: SIMULATION");
+        Serial.println("AP mode disabled (not supported in Wokwi)");
+        Serial.println("Access web interface via network");
+        #else
         Serial.print("Connect to WiFi AP: ");
         Serial.println(AP_SSID);
         Serial.print("Password: ");
         Serial.println(AP_PASSWORD);
         Serial.print("Then open: http://");
         Serial.println(wifiManager.getAPIP());
+        wifiManager.startAP();
+        #endif
         Serial.println("=================================");
         #endif
-        
+
         // Start web server for setup
         if (!webServer.isRunning()) {
             webServer.begin(&storage, &calculator, &pumpController, &waterTracker);
         }
     }
-    
-    // ✅ FIX: Update display only every 5 seconds to prevent flickering
-    if (millis() - lastDisplayUpdate > 5000) {
-        lastDisplayUpdate = millis();
+
+    // ✅ FIX: Show setup screen immediately on first call, then keep it displayed
+    if (!displayInitialized) {
+        displayInitialized = true;
+        #if SIMULATION_MODE
+        displayManager.showSetupScreen("SIMULATION\nAccess web UI\nfor setup");
+        #else
         displayManager.showSetupScreen("Connect to WiFi:\n" + String(AP_SSID) + "\nPassword: " + String(AP_PASSWORD));
+        #endif
     }
     
     // ✅ FIX: Check setup status only periodically (every 2 seconds)
@@ -275,18 +288,21 @@ void firstTimeSetup() {
             // Switch back to main screen and show completion message
             displayManager.setScreen(SCREEN_MAIN);
             displayManager.showMessage("Setup", "Complete!", 2000);
-            delay(2000);
 
             systemState = STATE_NORMAL_OPERATION;
-            initializeSystem();
+            // initializeSystem() will be called by normalOperation() on next loop
         }
     }
-    
-    delay(100); // Small delay to prevent tight loop
 }
 
 // ==================== NORMAL OPERATION ====================
 void normalOperation() {
+    // Initialize system on first run
+    if (!systemInitialized) {
+        initializeSystem();
+        return; // Skip rest of loop during initialization
+    }
+
     // Read sensor periodically
     if (millis() - lastSensorRead > SENSOR_SAMPLE_INTERVAL_MS) {
         readSensor();
@@ -334,8 +350,6 @@ void normalOperation() {
     if (mlPredictor.isEnabled()) {
         mlPredictor.loop();
     }
-    
-    delay(10); // Small delay to prevent watchdog issues
 }
 
 // ==================== CONFIGURATION MODE ====================
@@ -377,24 +391,27 @@ void configMode() {
         // Factory reset
         displayManager.showMessage("Reset", "Resetting...", 3000);
         storage.factoryReset();
-        delay(3000);
+        delay(1000); // Brief delay before restart
         ESP.restart();
     }
-    
-    delay(50);
 }
 
 // ==================== BUTTON EVENT HANDLING ====================
 void handleButtonEvents() {
     ButtonEvent event = buttonHandler.getEvent();
-    
+
     if (event == BTN_NONE) return;
-    
+
+    // Don't allow screen switching during first-time setup
+    if (systemState == STATE_FIRST_TIME_SETUP) {
+        return;
+    }
+
     switch (event) {
         case BTN_LEFT_PRESS:
             displayManager.previousScreen();
             break;
-            
+
         case BTN_RIGHT_PRESS:
             displayManager.nextScreen();
             break;

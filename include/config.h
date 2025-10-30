@@ -2,6 +2,11 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+// ==================== SIMULATION MODE ====================
+// Enable this when running in Wokwi simulator (disables AP mode only)
+// Note: Wokwi supports WiFi connection to "Wokwi-GUEST" but not AP mode
+#define SIMULATION_MODE true               // Set to false for real hardware
+
 // ==================== PROTOCOL DEFINITIONS (MUST BE FIRST) ====================
 #define PROTOCOL_MQTT 1
 #define PROTOCOL_WEBSOCKET 2
