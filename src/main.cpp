@@ -118,17 +118,11 @@ void setup() {
         #endif
     }
 
-    // ✅ FIX: Check if setup is needed
-    // Setup only needed if no WiFi credentials AND first time
-    String ssid, password;
-    bool hasWiFiCreds = storage.loadWiFiCredentials(ssid, password);
-    bool isFirstTime = storage.isFirstTimeSetup();
-
-    // Only enter setup mode if truly needed (no WiFi AND first time)
-    if (isFirstTime && !hasWiFiCreds) {
+    // ✅ Check if first-time setup is needed (for tank configuration)
+    if (storage.isFirstTimeSetup()) {
         systemState = STATE_FIRST_TIME_SETUP;
         #if ENABLE_SERIAL_DEBUG
-        Serial.println("First-time setup required - No WiFi credentials");
+        Serial.println("First-time setup required");
         #endif
         // Set display to setup screen immediately to prevent flickering
         #if SIMULATION_MODE
@@ -137,16 +131,6 @@ void setup() {
         displayManager.showSetupScreen("Connect to WiFi:\n" + String(AP_SSID) + "\nPassword: " + String(AP_PASSWORD));
         #endif
     } else {
-        // Have WiFi credentials or not first time - skip setup, go straight to operation
-        if (isFirstTime && hasWiFiCreds) {
-            #if ENABLE_SERIAL_DEBUG
-            Serial.println("WiFi credentials found - skipping first-time setup");
-            Serial.print("Will connect to: ");
-            Serial.println(ssid);
-            #endif
-            // Mark setup as complete since we have WiFi
-            storage.markSetupComplete();
-        }
         systemState = STATE_NORMAL_OPERATION;
         displayManager.showMessage("System", "Initializing...", 2000);
         // Don't block - let loop handle initialization
@@ -285,34 +269,61 @@ void initializeSystem() {
 
 // ==================== FIRST TIME SETUP ====================
 void firstTimeSetup() {
-    // ✅ FIX: Static variable to ensure AP is started only once
-    static bool apStarted = false;
+    // ✅ FIX: Static variables to ensure one-time initialization
+    static bool networkStarted = false;
     static bool displayInitialized = false;
 
-    // Start AP mode for configuration (only once)
-    if (!apStarted) {
-        apStarted = true;
+    // Start network (WiFi or AP) for configuration (only once)
+    if (!networkStarted) {
+        networkStarted = true;
+
+        // Check if WiFi credentials exist
+        String ssid, password;
+        bool hasWiFiCreds = storage.loadWiFiCredentials(ssid, password);
 
         #if ENABLE_SERIAL_DEBUG
         Serial.println("=================================");
         Serial.println("FIRST TIME SETUP MODE");
-        #if SIMULATION_MODE
-        Serial.println("MODE: SIMULATION");
-        Serial.println("AP mode disabled (not supported in Wokwi)");
-        Serial.println("Access web interface via network");
-        #else
-        Serial.print("Connect to WiFi AP: ");
-        Serial.println(AP_SSID);
-        Serial.print("Password: ");
-        Serial.println(AP_PASSWORD);
-        if (!wifiManager.startAP()) {
-            Serial.println("ERROR: Failed to start Access Point!");
-            Serial.println("System will continue in standalone mode");
-        } else {
-            Serial.print("Then open: http://");
-            Serial.println(wifiManager.getAPIP());
-        }
         #endif
+
+        if (hasWiFiCreds) {
+            // WiFi credentials found - try to connect
+            #if ENABLE_SERIAL_DEBUG
+            Serial.print("WiFi credentials found - connecting to: ");
+            Serial.println(ssid);
+            #endif
+            wifiManager.connectToWiFi(ssid, password);
+        } else {
+            // No WiFi credentials - start AP mode (real hardware) or use Wokwi-GUEST (simulation)
+            #if SIMULATION_MODE
+            #if ENABLE_SERIAL_DEBUG
+            Serial.println("MODE: SIMULATION");
+            Serial.println("No saved WiFi - will use Wokwi-GUEST");
+            Serial.println("Access web interface via network");
+            #endif
+            #else
+            // Real hardware - start AP mode
+            #if ENABLE_SERIAL_DEBUG
+            Serial.print("No WiFi credentials - starting AP: ");
+            Serial.println(AP_SSID);
+            Serial.print("Password: ");
+            Serial.println(AP_PASSWORD);
+            #endif
+            if (!wifiManager.startAP()) {
+                #if ENABLE_SERIAL_DEBUG
+                Serial.println("ERROR: Failed to start Access Point!");
+                Serial.println("System will continue in standalone mode");
+                #endif
+            } else {
+                #if ENABLE_SERIAL_DEBUG
+                Serial.print("Then open: http://");
+                Serial.println(wifiManager.getAPIP());
+                #endif
+            }
+            #endif
+        }
+
+        #if ENABLE_SERIAL_DEBUG
         Serial.println("=================================");
         #endif
 
