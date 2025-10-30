@@ -41,6 +41,7 @@ float maxInflow = 0.0;
 unsigned long lastSensorRead = 0;
 unsigned long lastTelemetrySend = 0;
 bool systemInitialized = false;
+bool wifiInitialized = false;  // Track if TCP/IP stack is ready
 
 enum SystemState {
     STATE_FIRST_TIME_SETUP,
@@ -90,13 +91,32 @@ void setup() {
     buttonHandler.begin();
 
     // Initialize WiFi manager early (needed for TCP/IP stack even in simulation)
+    // NOTE: Once TCP/IP stack is initialized, it keeps running even if:
+    //       - WiFi disconnects later
+    //       - AP mode fails to start
+    //       - Network connection is lost
+    // This prevents crashes in AsyncWebServer which depends on TCP/IP stack
     #if ENABLE_SERIAL_DEBUG
     #if SIMULATION_MODE
     Serial.println("Initializing WiFi (TCP/IP stack for web server)...");
     #endif
     #endif
-    wifiManager.begin();
-    delay(100); // Brief delay to ensure TCP/IP stack is ready
+
+    if (!wifiManager.begin()) {
+        #if ENABLE_SERIAL_DEBUG
+        Serial.println("WARNING: WiFi initialization failed!");
+        Serial.println("Web server will not be available");
+        Serial.println("System will continue in standalone mode");
+        #endif
+        wifiInitialized = false;
+        // Don't crash - just continue without web server
+    } else {
+        delay(100); // Brief delay to ensure TCP/IP stack is ready
+        wifiInitialized = true;
+        #if ENABLE_SERIAL_DEBUG
+        Serial.println("WiFi Manager initialized - TCP/IP stack ready");
+        #endif
+    }
 
     // ✅ FIX: Check setup status ONCE and set appropriate state
     if (storage.isFirstTimeSetup()) {
@@ -202,9 +222,19 @@ void initializeSystem() {
     // Initialize water tracker
     waterTracker.begin(&storage, &calculator);
     
-    // Try to start web server (optional - only if WiFi available)
-    if (webServer.begin(&storage, &calculator, &pumpController, &waterTracker)) {
-        displayManager.showMessage("WebServer", "Started!", 2000);
+    // Try to start web server (optional - only if WiFi/TCP-IP available)
+    if (wifiInitialized) {
+        if (webServer.begin(&storage, &calculator, &pumpController, &waterTracker)) {
+            displayManager.showMessage("WebServer", "Started!", 2000);
+        } else {
+            #if ENABLE_SERIAL_DEBUG
+            Serial.println("Web server failed to start");
+            #endif
+        }
+    } else {
+        #if ENABLE_SERIAL_DEBUG
+        Serial.println("Web server disabled - WiFi not initialized");
+        #endif
     }
     
     // Try to initialize OTA updater (optional - only if WiFi available)
@@ -259,16 +289,29 @@ void firstTimeSetup() {
         Serial.println(AP_SSID);
         Serial.print("Password: ");
         Serial.println(AP_PASSWORD);
-        Serial.print("Then open: http://");
-        Serial.println(wifiManager.getAPIP());
-        wifiManager.startAP();
+        if (!wifiManager.startAP()) {
+            Serial.println("ERROR: Failed to start Access Point!");
+            Serial.println("System will continue in standalone mode");
+        } else {
+            Serial.print("Then open: http://");
+            Serial.println(wifiManager.getAPIP());
+        }
         #endif
         Serial.println("=================================");
         #endif
 
-        // Start web server for setup
-        if (!webServer.isRunning()) {
-            webServer.begin(&storage, &calculator, &pumpController, &waterTracker);
+        // Start web server for setup (only if WiFi/TCP-IP initialized)
+        if (!webServer.isRunning() && wifiInitialized) {
+            if (!webServer.begin(&storage, &calculator, &pumpController, &waterTracker)) {
+                #if ENABLE_SERIAL_DEBUG
+                Serial.println("WARNING: Web server failed to start!");
+                Serial.println("Check WiFi/network connectivity");
+                #endif
+            }
+        } else if (!wifiInitialized) {
+            #if ENABLE_SERIAL_DEBUG
+            Serial.println("Web server skipped - WiFi not initialized");
+            #endif
         }
     }
 
