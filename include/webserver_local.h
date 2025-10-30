@@ -54,7 +54,7 @@ private:
     void handleSetConfig(AsyncWebServerRequest* request);
     void handleWiFiScan(AsyncWebServerRequest* request);
     void handleWiFiConnect(AsyncWebServerRequest* request);
-    void handleSetup(AsyncWebServerRequest* request);
+    void handleSetup(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total);
     void handleUsageStats(AsyncWebServerRequest* request);
     
     // Authentication

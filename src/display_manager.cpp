@@ -3,13 +3,14 @@
 #include "config.h"
 #include "pins.h"
 
-DisplayManager::DisplayManager() 
+DisplayManager::DisplayManager()
     : _display(DISPLAY_WIDTH, DISPLAY_HEIGHT, &Wire, OLED_RESET),
       _currentScreen(SCREEN_MAIN),
       _lastUpdate(0),
       _lastActivity(0),
       _isDimmed(false),
-      _messageEndTime(0) {
+      _messageEndTime(0),
+      _setupPrompt("") {
 }
 
 bool DisplayManager::begin() {
@@ -48,7 +49,7 @@ void DisplayManager::loop() {
     // Update display at regular intervals
     if (millis() - _lastUpdate > DISPLAY_UPDATE_INTERVAL_MS) {
         _lastUpdate = millis();
-        
+
         if (_messageEndTime == 0) { // Only update if no temporary message
             switch (_currentScreen) {
                 case SCREEN_MAIN:
@@ -59,6 +60,9 @@ void DisplayManager::loop() {
                     break;
                 case SCREEN_USAGE:
                     drawUsageScreen();
+                    break;
+                case SCREEN_SETUP:
+                    drawSetupScreen(_setupPrompt);
                     break;
                 default:
                     break;
@@ -151,6 +155,10 @@ void DisplayManager::showConfigMenu(int selectedItem) {
 }
 
 void DisplayManager::showSetupScreen(const String& prompt) {
+    _setupPrompt = prompt;
+    _currentScreen = SCREEN_SETUP;
+    _lastActivity = millis();
+    if (_isDimmed) wakeDisplay();
     drawSetupScreen(prompt);
 }
 
