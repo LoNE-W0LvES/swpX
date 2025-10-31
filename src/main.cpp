@@ -118,7 +118,7 @@ void setup() {
         #endif
     }
 
-    // ✅ FIX: Check setup status ONCE and set appropriate state
+    // ✅ Check if first-time setup is needed (for tank configuration)
     if (storage.isFirstTimeSetup()) {
         systemState = STATE_FIRST_TIME_SETUP;
         #if ENABLE_SERIAL_DEBUG
@@ -269,34 +269,72 @@ void initializeSystem() {
 
 // ==================== FIRST TIME SETUP ====================
 void firstTimeSetup() {
-    // ✅ FIX: Static variable to ensure AP is started only once
-    static bool apStarted = false;
+    // ✅ FIX: Static variables to ensure one-time initialization
+    static bool networkStarted = false;
     static bool displayInitialized = false;
 
-    // Start AP mode for configuration (only once)
-    if (!apStarted) {
-        apStarted = true;
+    // Start network (WiFi or AP) for configuration (only once)
+    if (!networkStarted) {
+        networkStarted = true;
 
         #if ENABLE_SERIAL_DEBUG
         Serial.println("=================================");
         Serial.println("FIRST TIME SETUP MODE");
+        #endif
+
+        // Check if WiFi credentials exist
+        String ssid, password;
+        bool hasWiFiCreds = storage.loadWiFiCredentials(ssid, password);
+
         #if SIMULATION_MODE
-        Serial.println("MODE: SIMULATION");
-        Serial.println("AP mode disabled (not supported in Wokwi)");
-        Serial.println("Access web interface via network");
-        #else
-        Serial.print("Connect to WiFi AP: ");
-        Serial.println(AP_SSID);
-        Serial.print("Password: ");
-        Serial.println(AP_PASSWORD);
-        if (!wifiManager.startAP()) {
-            Serial.println("ERROR: Failed to start Access Point!");
-            Serial.println("System will continue in standalone mode");
+        // In simulation mode, always try WiFi (use Wokwi-GUEST if no creds)
+        if (!hasWiFiCreds || ssid.isEmpty()) {
+            ssid = "Wokwi-GUEST";
+            password = "";
+            #if ENABLE_SERIAL_DEBUG
+            Serial.println("MODE: SIMULATION");
+            Serial.println("No saved WiFi - connecting to Wokwi-GUEST");
+            #endif
         } else {
-            Serial.print("Then open: http://");
-            Serial.println(wifiManager.getAPIP());
+            #if ENABLE_SERIAL_DEBUG
+            Serial.println("MODE: SIMULATION");
+            Serial.print("Connecting to saved WiFi: ");
+            Serial.println(ssid);
+            #endif
+        }
+        wifiManager.connectToWiFi(ssid, password);
+        #else
+        // Real hardware mode
+        if (hasWiFiCreds && !ssid.isEmpty()) {
+            // WiFi credentials found - try to connect
+            #if ENABLE_SERIAL_DEBUG
+            Serial.print("WiFi credentials found - connecting to: ");
+            Serial.println(ssid);
+            #endif
+            wifiManager.connectToWiFi(ssid, password);
+        } else {
+            // No WiFi credentials - start AP mode
+            #if ENABLE_SERIAL_DEBUG
+            Serial.print("No WiFi credentials - starting AP: ");
+            Serial.println(AP_SSID);
+            Serial.print("Password: ");
+            Serial.println(AP_PASSWORD);
+            #endif
+            if (!wifiManager.startAP()) {
+                #if ENABLE_SERIAL_DEBUG
+                Serial.println("ERROR: Failed to start Access Point!");
+                Serial.println("System will continue in standalone mode");
+                #endif
+            } else {
+                #if ENABLE_SERIAL_DEBUG
+                Serial.print("Then open: http://");
+                Serial.println(wifiManager.getAPIP());
+                #endif
+            }
         }
         #endif
+
+        #if ENABLE_SERIAL_DEBUG
         Serial.println("=================================");
         #endif
 
@@ -315,17 +353,157 @@ void firstTimeSetup() {
         }
     }
 
-    // ✅ FIX: Show setup screen immediately on first call, then keep it displayed
+    // ✅ Setup via buttons and display
+    static int setupStep = 0;  // 0=shape, 1=height, 2=dimensions, 3=thresholds, 4=done
+    static TankConfig setupConfig;
+    static float tempValue = 0;
+
+    // Initialize setup config on first call
     if (!displayInitialized) {
         displayInitialized = true;
-        #if SIMULATION_MODE
-        displayManager.showSetupScreen("SIMULATION\nAccess web UI\nfor setup");
-        #else
-        displayManager.showSetupScreen("Connect to WiFi:\n" + String(AP_SSID) + "\nPassword: " + String(AP_PASSWORD));
-        #endif
+        setupConfig.shape = RECTANGULAR;
+        setupConfig.tankHeight = 100.0;
+        setupConfig.tankLength = 100.0;
+        setupConfig.tankWidth = 100.0;
+        setupConfig.tankRadius = 50.0;
+        setupConfig.upperThreshold = DEFAULT_UPPER_THRESHOLD;
+        setupConfig.lowerThreshold = DEFAULT_LOWER_THRESHOLD;
+        setupStep = 0;
+        tempValue = 0;
     }
-    
-    // ✅ FIX: Check setup status only periodically (every 2 seconds)
+
+    // Handle button input for setup
+    ButtonEvent event = buttonHandler.getEvent();
+
+    switch (setupStep) {
+        case 0: // Tank shape selection
+            displayManager.showSetupScreen("Tank Shape:\n" + String(setupConfig.shape == RECTANGULAR ? ">Rectangular" : " Rectangular") + "\n" + String(setupConfig.shape == CYLINDRICAL ? ">Cylindrical" : " Cylindrical") + "\nMID=Select");
+            if (event == BTN_TOP_PRESS || event == BTN_BOTTOM_PRESS) {
+                setupConfig.shape = (setupConfig.shape == RECTANGULAR) ? CYLINDRICAL : RECTANGULAR;
+            } else if (event == BTN_MID_PRESS) {
+                setupStep = 1;
+                tempValue = setupConfig.tankHeight;
+            }
+            break;
+
+        case 1: // Tank height
+            displayManager.showSetupScreen("Tank Height:\n" + String(tempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
+            if (event == BTN_TOP_PRESS) {
+                tempValue += 10.0;
+                if (tempValue > 500) tempValue = 500;
+            } else if (event == BTN_BOTTOM_PRESS) {
+                tempValue -= 10.0;
+                if (tempValue < 10) tempValue = 10;
+            } else if (event == BTN_MID_PRESS) {
+                setupConfig.tankHeight = tempValue;
+                setupStep = 2;
+                if (setupConfig.shape == RECTANGULAR) {
+                    tempValue = setupConfig.tankLength;
+                } else {
+                    tempValue = setupConfig.tankRadius;
+                }
+            }
+            break;
+
+        case 2: // Tank dimensions
+            if (setupConfig.shape == RECTANGULAR) {
+                static bool doingWidth = false;
+                if (!doingWidth) {
+                    displayManager.showSetupScreen("Tank Length:\n" + String(tempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
+                    if (event == BTN_TOP_PRESS) {
+                        tempValue += 10.0;
+                        if (tempValue > 500) tempValue = 500;
+                    } else if (event == BTN_BOTTOM_PRESS) {
+                        tempValue -= 10.0;
+                        if (tempValue < 10) tempValue = 10;
+                    } else if (event == BTN_MID_PRESS) {
+                        setupConfig.tankLength = tempValue;
+                        tempValue = setupConfig.tankWidth;
+                        doingWidth = true;
+                    }
+                } else {
+                    displayManager.showSetupScreen("Tank Width:\n" + String(tempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
+                    if (event == BTN_TOP_PRESS) {
+                        tempValue += 10.0;
+                        if (tempValue > 500) tempValue = 500;
+                    } else if (event == BTN_BOTTOM_PRESS) {
+                        tempValue -= 10.0;
+                        if (tempValue < 10) tempValue = 10;
+                    } else if (event == BTN_MID_PRESS) {
+                        setupConfig.tankWidth = tempValue;
+                        doingWidth = false;
+                        setupStep = 3;
+                        tempValue = setupConfig.lowerThreshold;
+                    }
+                }
+            } else { // Cylindrical
+                displayManager.showSetupScreen("Tank Radius:\n" + String(tempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
+                if (event == BTN_TOP_PRESS) {
+                    tempValue += 10.0;
+                    if (tempValue > 250) tempValue = 250;
+                } else if (event == BTN_BOTTOM_PRESS) {
+                    tempValue -= 10.0;
+                    if (tempValue < 5) tempValue = 5;
+                } else if (event == BTN_MID_PRESS) {
+                    setupConfig.tankRadius = tempValue;
+                    setupStep = 3;
+                    tempValue = setupConfig.lowerThreshold;
+                }
+            }
+            break;
+
+        case 3: // Thresholds
+            static bool doingUpper = false;
+            if (!doingUpper) {
+                displayManager.showSetupScreen("Lower Threshold:\n" + String(tempValue, 0) + " %\nUP/DOWN adjust\nMID=Confirm");
+                if (event == BTN_TOP_PRESS) {
+                    tempValue += 5.0;
+                    if (tempValue > 95) tempValue = 95;
+                } else if (event == BTN_BOTTOM_PRESS) {
+                    tempValue -= 5.0;
+                    if (tempValue < 5) tempValue = 5;
+                } else if (event == BTN_MID_PRESS) {
+                    setupConfig.lowerThreshold = tempValue;
+                    tempValue = setupConfig.upperThreshold;
+                    doingUpper = true;
+                }
+            } else {
+                displayManager.showSetupScreen("Upper Threshold:\n" + String(tempValue, 0) + " %\nUP/DOWN adjust\nMID=Confirm");
+                if (event == BTN_TOP_PRESS) {
+                    tempValue += 5.0;
+                    if (tempValue > 100) tempValue = 100;
+                } else if (event == BTN_BOTTOM_PRESS) {
+                    tempValue -= 5.0;
+                    if (tempValue < setupConfig.lowerThreshold + 5) tempValue = setupConfig.lowerThreshold + 5;
+                } else if (event == BTN_MID_PRESS) {
+                    setupConfig.upperThreshold = tempValue;
+                    doingUpper = false;
+                    setupStep = 4;
+                }
+            }
+            break;
+
+        case 4: // Done - save config
+            displayManager.showSetupScreen("Setup Complete!\nPress MID\nto save & exit");
+            if (event == BTN_MID_PRESS) {
+                // Save configuration
+                setupConfig.firstTimeSetup = false;
+                storage.saveTankConfig(setupConfig);
+                storage.markSetupComplete();
+
+                #if ENABLE_SERIAL_DEBUG
+                Serial.println("Setup completed via buttons!");
+                Serial.println("Tank configuration saved");
+                #endif
+
+                displayManager.showMessage("Setup", "Complete!", 2000);
+                systemState = STATE_NORMAL_OPERATION;
+                setupStep = 0;
+            }
+            break;
+    }
+
+    // ✅ FIX: Check setup status only periodically (every 2 seconds) - for web interface completion
     static unsigned long lastSetupCheck = 0;
     if (millis() - lastSetupCheck > 2000) {
         lastSetupCheck = millis();

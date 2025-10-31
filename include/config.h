@@ -3,8 +3,11 @@
 #define CONFIG_H
 
 // ==================== SIMULATION MODE ====================
-// Enable this when running in Wokwi simulator (disables AP mode only)
-// Note: Wokwi supports WiFi connection to "Wokwi-GUEST" but not AP mode
+// Enable this when running in Wokwi simulator
+// - First-time setup screen still shows (for tank configuration)
+// - WiFi logic: If credentials exist → connect, if not → use "Wokwi-GUEST"
+// - AP mode disabled (not supported in Wokwi)
+// Note: Wokwi supports WiFi connection but not AP mode
 #define SIMULATION_MODE true               // Set to false for real hardware
 
 // ==================== PROTOCOL DEFINITIONS (MUST BE FIRST) ====================

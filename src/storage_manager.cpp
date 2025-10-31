@@ -80,6 +80,19 @@ bool StorageManager::loadWiFiCredentials(String& ssid, String& password) {
     ssid = preferences.getString("wifiSSID", "");
     password = preferences.getString("wifiPass", "");
     preferences.end();
+
+    // If no credentials found and in simulation mode, use Wokwi defaults
+    #if SIMULATION_MODE
+    if (ssid.isEmpty()) {
+        ssid = "Wokwi-GUEST";
+        password = "";
+        #if ENABLE_SERIAL_DEBUG
+        Serial.println("No saved WiFi - using Wokwi-GUEST defaults");
+        #endif
+        return true; // Return true so it attempts connection
+    }
+    #endif
+
     return !ssid.isEmpty();
 }
 
