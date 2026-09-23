@@ -5,6 +5,8 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include "storage_manager.h"
+#include "button_handler.h"
 
 enum DisplayScreen {
     SCREEN_MAIN,
@@ -36,28 +38,28 @@ public:
     bool begin();
     void loop();
     
-    // Update display data
     void updateData(const DisplayData& data);
     
-    // Screen management
     void setScreen(DisplayScreen screen);
     DisplayScreen getCurrentScreen();
     void nextScreen();
     void previousScreen();
     
-    // Display messages
     void showMessage(const String& title, const String& message, int duration = 2000);
     void showProgress(const String& title, int percent);
     void showError(const String& error);
     
-    // Configuration menu
     void showConfigMenu(int selectedItem);
     void showSetupScreen(const String& prompt);
     
-    // Brightness control
     void setBrightness(uint8_t brightness);
     void dimDisplay();
     void wakeDisplay();
+    
+    // Setup wizard functionality
+    bool handleSetupWizard(ButtonEvent event, TankConfig& config);
+    void resetSetupWizard();
+    bool isSetupComplete();
     
 private:
     Adafruit_SSD1306 _display;
@@ -71,6 +73,13 @@ private:
     String _messageText;
     String _setupPrompt;
     
+    // Setup wizard state
+    int _setupStep;
+    bool _setupDoingWidth;
+    bool _setupDoingUpper;
+    float _setupTempValue;
+    bool _setupComplete;
+    
     void drawMainScreen();
     void drawStatusScreen();
     void drawUsageScreen();
@@ -83,4 +92,3 @@ private:
 };
 
 #endif // DISPLAY_MANAGER_H
-

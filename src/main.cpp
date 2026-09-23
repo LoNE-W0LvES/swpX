@@ -1,4 +1,4 @@
-// main.cpp - Smart Water Pump System - FIXED SCREEN FLICKERING
+// main.cpp - Smart Water Pump System with ML Integration
 #include <Arduino.h>
 #include "config.h"
 #include "pins.h"
@@ -17,7 +17,7 @@
 #include "ml_predictor.h"
 #include "utils.h"
 
-// ==================== GLOBAL OBJECTS ====================
+// Global objects
 StorageManager storage;
 UltrasonicSensor sensor(SENSOR_TRIG_PIN, SENSOR_ECHO_PIN);
 TankCalculator calculator;
@@ -32,7 +32,7 @@ WebServerLocal webServer;
 OTAUpdater otaUpdater;
 MLPredictor mlPredictor;
 
-// ==================== GLOBAL STATE ====================
+// Global state
 TankConfig currentConfig;
 float currentWaterLevel = 0.0;
 float previousWaterLevel = 0.0;
@@ -40,8 +40,11 @@ float currentInflow = 0.0;
 float maxInflow = 0.0;
 unsigned long lastSensorRead = 0;
 unsigned long lastTelemetrySend = 0;
+unsigned long lastMLPrediction = 0;
 bool systemInitialized = false;
-bool wifiInitialized = false;  // Track if TCP/IP stack is ready
+bool wifiInitialized = false;
+bool iotAvailable = false;
+bool mlModelAvailable = false;
 
 enum SystemState {
     STATE_FIRST_TIME_SETUP,
@@ -52,7 +55,7 @@ enum SystemState {
 
 SystemState systemState = STATE_FIRST_TIME_SETUP;
 
-// ==================== FUNCTION DECLARATIONS ====================
+// Function declarations
 void initializeSystem();
 void firstTimeSetup();
 void normalOperation();
@@ -60,12 +63,13 @@ void configMode();
 void handleButtonEvents();
 void readSensor();
 void updatePumpControl();
+void updatePumpControlWithML();
 void updateDisplay();
 void handleIoTCommands(const CommandData& cmd);
 void handleIoTConfig(const String& configJson);
 void sendTelemetry();
+void startNetworkForSetup();
 
-// ==================== SETUP ====================
 void setup() {
     #if ENABLE_SERIAL_DEBUG
     Serial.begin(SERIAL_BAUD_RATE);
@@ -75,7 +79,6 @@ void setup() {
     Serial.println("=================================\n");
     #endif
     
-    // Initialize storage
     if (!storage.begin()) {
         #if ENABLE_SERIAL_DEBUG
         Serial.println("FATAL: Storage initialization failed!");
@@ -84,66 +87,46 @@ void setup() {
         return;
     }
     
-    // Initialize hardware
     pumpController.begin();
     sensor.begin();
     displayManager.begin();
     buttonHandler.begin();
 
-    // Initialize WiFi manager early (needed for TCP/IP stack even in simulation)
-    // NOTE: Once TCP/IP stack is initialized, it keeps running even if:
-    //       - WiFi disconnects later
-    //       - AP mode fails to start
-    //       - Network connection is lost
-    // This prevents crashes in AsyncWebServer which depends on TCP/IP stack
-    #if ENABLE_SERIAL_DEBUG
-    #if SIMULATION_MODE
-    Serial.println("Initializing WiFi (TCP/IP stack for web server)...");
-    #endif
-    #endif
-
+    // Initialize WiFi/TCP stack
     if (!wifiManager.begin()) {
         #if ENABLE_SERIAL_DEBUG
         Serial.println("WARNING: WiFi initialization failed!");
-        Serial.println("Web server will not be available");
-        Serial.println("System will continue in standalone mode");
         #endif
         wifiInitialized = false;
-        // Don't crash - just continue without web server
     } else {
-        delay(100); // Brief delay to ensure TCP/IP stack is ready
+        delay(100);
         wifiInitialized = true;
         #if ENABLE_SERIAL_DEBUG
-        Serial.println("WiFi Manager initialized - TCP/IP stack ready");
+        Serial.println("WiFi Manager initialized");
         #endif
     }
 
-    // ✅ Check if first-time setup is needed (for tank configuration)
+    // Check if first-time setup needed
     if (storage.isFirstTimeSetup()) {
         systemState = STATE_FIRST_TIME_SETUP;
         #if ENABLE_SERIAL_DEBUG
         Serial.println("First-time setup required");
         #endif
-        // Set display to setup screen immediately to prevent flickering
         #if SIMULATION_MODE
-        displayManager.showSetupScreen("SIMULATION\nAccess web UI\nfor setup");
+        displayManager.showSetupScreen("SIMULATION\nAccess web UI\nat localhost:8180");
         #else
         displayManager.showSetupScreen("Connect to WiFi:\n" + String(AP_SSID) + "\nPassword: " + String(AP_PASSWORD));
         #endif
     } else {
         systemState = STATE_NORMAL_OPERATION;
         displayManager.showMessage("System", "Initializing...", 2000);
-        // Don't block - let loop handle initialization
     }
 }
 
-// ==================== MAIN LOOP ====================
 void loop() {
-    // Update all components
     buttonHandler.loop();
     displayManager.loop();
     
-    // State machine
     switch (systemState) {
         case STATE_FIRST_TIME_SETUP:
             firstTimeSetup();
@@ -164,81 +147,71 @@ void loop() {
             break;
     }
     
-    // Handle button events across all states
     handleButtonEvents();
 }
 
-// ==================== INITIALIZATION ====================
 void initializeSystem() {
     #if ENABLE_SERIAL_DEBUG
     Serial.println("Initializing system...");
     #endif
     
-    // Load configuration
     currentConfig = storage.loadTankConfig();
     calculator.setTankConfig(currentConfig);
 
-    // WiFi manager already initialized in setup(), now configure it
     if (!currentConfig.firstTimeSetup) {
         displayManager.showMessage("WiFi", "Connecting...", 2000);
 
+        // Try to connect to WiFi (optional, system works standalone)
         #if IOT_ENABLED
         if (wifiManager.connectToSavedWiFi()) {
             displayManager.showMessage("WiFi", "Connected!", 2000);
-
-            // Start mDNS
             wifiManager.startMDNS("waterpump");
 
-            // Try to initialize IoT client (will fail gracefully if server unavailable)
+            // Try to connect to IoT (optional, graceful failure)
             if (iotClient.begin()) {
                 displayManager.showMessage("Cloud", "Connected!", 2000);
-
-                // Set up callbacks
                 iotClient.setCommandCallback(handleIoTCommands);
                 iotClient.setConfigCallback(handleIoTConfig);
-
-                // Initialize sync manager
                 syncManager.begin(&storage, &iotClient);
-
-                // Initial config sync (optional, continues if fails)
                 syncManager.syncConfig();
+                iotAvailable = true;
             } else {
                 #if ENABLE_SERIAL_DEBUG
-                Serial.println("IoT connection failed - continuing in standalone mode");
+                Serial.println("IoT unavailable - standalone mode");
                 #endif
                 displayManager.showMessage("System", "Standalone Mode", 2000);
+                iotAvailable = false;
             }
         } else {
             #if ENABLE_SERIAL_DEBUG
-            Serial.println("WiFi connection failed - running standalone");
+            Serial.println("WiFi failed - standalone mode");
             #endif
             displayManager.showMessage("System", "No WiFi - OK", 2000);
+            iotAvailable = false;
         }
         #else
         displayManager.showMessage("System", "IoT Disabled", 2000);
+        iotAvailable = false;
         #endif
     }
     
-    // Initialize water tracker
     waterTracker.begin(&storage, &calculator);
     
-    // Try to start web server (optional - only if WiFi/TCP-IP available)
+    // Try to start web server (optional)
     if (wifiInitialized) {
         if (webServer.begin(&storage, &calculator, &pumpController, &waterTracker)) {
-            displayManager.showMessage("WebServer", "Started!", 2000);
-        } else {
             #if ENABLE_SERIAL_DEBUG
-            Serial.println("Web server failed to start");
+            Serial.println("Web server started");
+            #if SIMULATION_MODE
+            Serial.println("Access at: http://localhost:8180");
             #endif
+            #endif
+            displayManager.showMessage("WebServer", "Started!", 2000);
         }
-    } else {
-        #if ENABLE_SERIAL_DEBUG
-        Serial.println("Web server disabled - WiFi not initialized");
-        #endif
     }
     
-    // Try to initialize OTA updater (optional - only if WiFi available)
-    if (otaUpdater.begin(&storage, IOT_SERVER_URL, currentConfig.deviceToken)) {
+    // Try to initialize OTA (optional)
+    if (iotAvailable && otaUpdater.begin(&storage, IOT_SERVER_URL, currentConfig.deviceToken)) {
         displayManager.showMessage("OTA", "Ready", 2000);
         
         #if OTA_CHECK_AT_STARTUP
@@ -248,288 +221,130 @@ void initializeSystem() {
         #endif
     }
     
-    // Try to initialize ML predictor (optional - works without model)
-    if (mlPredictor.begin(&storage, IOT_SERVER_URL, currentConfig.deviceToken)) {
+    // Try to initialize ML predictor (optional, works without model)
+    #if ML_MODEL_ENABLED
+    if (iotAvailable && mlPredictor.begin(&storage, IOT_SERVER_URL, currentConfig.deviceToken)) {
         if (mlPredictor.isReady()) {
             displayManager.showMessage("ML", "Model Loaded", 2000);
+            mlModelAvailable = true;
         } else {
-            displayManager.showMessage("ML", "Using Fallback", 2000);
+            displayManager.showMessage("ML", "Fallback Mode", 2000);
+            mlModelAvailable = false;
         }
+    } else {
+        mlModelAvailable = false;
     }
+    #else
+    mlModelAvailable = false;
+    #endif
     
-    // Initial sensor reading
     readSensor();
-    
     systemInitialized = true;
     
     #if ENABLE_SERIAL_DEBUG
     Serial.println("System initialization complete");
+    Serial.println("Status:");
+    Serial.print("  - WiFi: ");
+    Serial.println(wifiInitialized ? "Available" : "Unavailable");
+    Serial.print("  - IoT: ");
+    Serial.println(iotAvailable ? "Connected" : "Unavailable");
+    Serial.print("  - ML Model: ");
+    Serial.println(mlModelAvailable ? "Loaded" : "Unavailable");
+    Serial.println("System is fully operational in standalone mode");
     #endif
 }
 
-// ==================== FIRST TIME SETUP ====================
 void firstTimeSetup() {
-    // ✅ FIX: Static variables to ensure one-time initialization
     static bool networkStarted = false;
-    static bool displayInitialized = false;
+    static unsigned long lastSetupCheck = 0;
 
-    // Start network (WiFi or AP) for configuration (only once)
     if (!networkStarted) {
         networkStarted = true;
-
-        #if ENABLE_SERIAL_DEBUG
-        Serial.println("=================================");
-        Serial.println("FIRST TIME SETUP MODE");
-        #endif
-
-        // Check if WiFi credentials exist
-        String ssid, password;
-        bool hasWiFiCreds = storage.loadWiFiCredentials(ssid, password);
-
-        #if SIMULATION_MODE
-        // In simulation mode, always try WiFi (use Wokwi-GUEST if no creds)
-        if (!hasWiFiCreds || ssid.isEmpty()) {
-            ssid = "Wokwi-GUEST";
-            password = "";
-            #if ENABLE_SERIAL_DEBUG
-            Serial.println("MODE: SIMULATION");
-            Serial.println("No saved WiFi - connecting to Wokwi-GUEST");
-            #endif
-        } else {
-            #if ENABLE_SERIAL_DEBUG
-            Serial.println("MODE: SIMULATION");
-            Serial.print("Connecting to saved WiFi: ");
-            Serial.println(ssid);
-            #endif
-        }
-        wifiManager.connectToWiFi(ssid, password);
-        #else
-        // Real hardware mode
-        if (hasWiFiCreds && !ssid.isEmpty()) {
-            // WiFi credentials found - try to connect
-            #if ENABLE_SERIAL_DEBUG
-            Serial.print("WiFi credentials found - connecting to: ");
-            Serial.println(ssid);
-            #endif
-            wifiManager.connectToWiFi(ssid, password);
-        } else {
-            // No WiFi credentials - start AP mode
-            #if ENABLE_SERIAL_DEBUG
-            Serial.print("No WiFi credentials - starting AP: ");
-            Serial.println(AP_SSID);
-            Serial.print("Password: ");
-            Serial.println(AP_PASSWORD);
-            #endif
-            if (!wifiManager.startAP()) {
-                #if ENABLE_SERIAL_DEBUG
-                Serial.println("ERROR: Failed to start Access Point!");
-                Serial.println("System will continue in standalone mode");
-                #endif
-            } else {
-                #if ENABLE_SERIAL_DEBUG
-                Serial.print("Then open: http://");
-                Serial.println(wifiManager.getAPIP());
-                #endif
-            }
-        }
-        #endif
-
-        #if ENABLE_SERIAL_DEBUG
-        Serial.println("=================================");
-        #endif
-
-        // Start web server for setup (only if WiFi/TCP-IP initialized)
-        if (!webServer.isRunning() && wifiInitialized) {
-            if (!webServer.begin(&storage, &calculator, &pumpController, &waterTracker)) {
-                #if ENABLE_SERIAL_DEBUG
-                Serial.println("WARNING: Web server failed to start!");
-                Serial.println("Check WiFi/network connectivity");
-                #endif
-            }
-        } else if (!wifiInitialized) {
-            #if ENABLE_SERIAL_DEBUG
-            Serial.println("Web server skipped - WiFi not initialized");
-            #endif
-        }
+        startNetworkForSetup();
     }
 
-    // ✅ Setup via buttons and display
-    static int setupStep = 0;  // 0=shape, 1=height, 2=dimensions, 3=thresholds, 4=done
-    static TankConfig setupConfig;
-    static float tempValue = 0;
-
-    // Initialize setup config on first call
-    if (!displayInitialized) {
-        displayInitialized = true;
-        setupConfig.shape = RECTANGULAR;
-        setupConfig.tankHeight = 100.0;
-        setupConfig.tankLength = 100.0;
-        setupConfig.tankWidth = 100.0;
-        setupConfig.tankRadius = 50.0;
-        setupConfig.upperThreshold = DEFAULT_UPPER_THRESHOLD;
-        setupConfig.lowerThreshold = DEFAULT_LOWER_THRESHOLD;
-        setupStep = 0;
-        tempValue = 0;
-    }
-
-    // Handle button input for setup
+    // Button-based setup wizard
+    TankConfig setupConfig = storage.loadTankConfig();
     ButtonEvent event = buttonHandler.getEvent();
-
-    switch (setupStep) {
-        case 0: // Tank shape selection
-            displayManager.showSetupScreen("Tank Shape:\n" + String(setupConfig.shape == RECTANGULAR ? ">Rectangular" : " Rectangular") + "\n" + String(setupConfig.shape == CYLINDRICAL ? ">Cylindrical" : " Cylindrical") + "\nMID=Select");
-            if (event == BTN_TOP_PRESS || event == BTN_BOTTOM_PRESS) {
-                setupConfig.shape = (setupConfig.shape == RECTANGULAR) ? CYLINDRICAL : RECTANGULAR;
-            } else if (event == BTN_MID_PRESS) {
-                setupStep = 1;
-                tempValue = setupConfig.tankHeight;
-            }
-            break;
-
-        case 1: // Tank height
-            displayManager.showSetupScreen("Tank Height:\n" + String(tempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
-            if (event == BTN_TOP_PRESS) {
-                tempValue += 10.0;
-                if (tempValue > 500) tempValue = 500;
-            } else if (event == BTN_BOTTOM_PRESS) {
-                tempValue -= 10.0;
-                if (tempValue < 10) tempValue = 10;
-            } else if (event == BTN_MID_PRESS) {
-                setupConfig.tankHeight = tempValue;
-                setupStep = 2;
-                if (setupConfig.shape == RECTANGULAR) {
-                    tempValue = setupConfig.tankLength;
-                } else {
-                    tempValue = setupConfig.tankRadius;
-                }
-            }
-            break;
-
-        case 2: // Tank dimensions
-            if (setupConfig.shape == RECTANGULAR) {
-                static bool doingWidth = false;
-                if (!doingWidth) {
-                    displayManager.showSetupScreen("Tank Length:\n" + String(tempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
-                    if (event == BTN_TOP_PRESS) {
-                        tempValue += 10.0;
-                        if (tempValue > 500) tempValue = 500;
-                    } else if (event == BTN_BOTTOM_PRESS) {
-                        tempValue -= 10.0;
-                        if (tempValue < 10) tempValue = 10;
-                    } else if (event == BTN_MID_PRESS) {
-                        setupConfig.tankLength = tempValue;
-                        tempValue = setupConfig.tankWidth;
-                        doingWidth = true;
-                    }
-                } else {
-                    displayManager.showSetupScreen("Tank Width:\n" + String(tempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
-                    if (event == BTN_TOP_PRESS) {
-                        tempValue += 10.0;
-                        if (tempValue > 500) tempValue = 500;
-                    } else if (event == BTN_BOTTOM_PRESS) {
-                        tempValue -= 10.0;
-                        if (tempValue < 10) tempValue = 10;
-                    } else if (event == BTN_MID_PRESS) {
-                        setupConfig.tankWidth = tempValue;
-                        doingWidth = false;
-                        setupStep = 3;
-                        tempValue = setupConfig.lowerThreshold;
-                    }
-                }
-            } else { // Cylindrical
-                displayManager.showSetupScreen("Tank Radius:\n" + String(tempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
-                if (event == BTN_TOP_PRESS) {
-                    tempValue += 10.0;
-                    if (tempValue > 250) tempValue = 250;
-                } else if (event == BTN_BOTTOM_PRESS) {
-                    tempValue -= 10.0;
-                    if (tempValue < 5) tempValue = 5;
-                } else if (event == BTN_MID_PRESS) {
-                    setupConfig.tankRadius = tempValue;
-                    setupStep = 3;
-                    tempValue = setupConfig.lowerThreshold;
-                }
-            }
-            break;
-
-        case 3: // Thresholds
-            static bool doingUpper = false;
-            if (!doingUpper) {
-                displayManager.showSetupScreen("Lower Threshold:\n" + String(tempValue, 0) + " %\nUP/DOWN adjust\nMID=Confirm");
-                if (event == BTN_TOP_PRESS) {
-                    tempValue += 5.0;
-                    if (tempValue > 95) tempValue = 95;
-                } else if (event == BTN_BOTTOM_PRESS) {
-                    tempValue -= 5.0;
-                    if (tempValue < 5) tempValue = 5;
-                } else if (event == BTN_MID_PRESS) {
-                    setupConfig.lowerThreshold = tempValue;
-                    tempValue = setupConfig.upperThreshold;
-                    doingUpper = true;
-                }
-            } else {
-                displayManager.showSetupScreen("Upper Threshold:\n" + String(tempValue, 0) + " %\nUP/DOWN adjust\nMID=Confirm");
-                if (event == BTN_TOP_PRESS) {
-                    tempValue += 5.0;
-                    if (tempValue > 100) tempValue = 100;
-                } else if (event == BTN_BOTTOM_PRESS) {
-                    tempValue -= 5.0;
-                    if (tempValue < setupConfig.lowerThreshold + 5) tempValue = setupConfig.lowerThreshold + 5;
-                } else if (event == BTN_MID_PRESS) {
-                    setupConfig.upperThreshold = tempValue;
-                    doingUpper = false;
-                    setupStep = 4;
-                }
-            }
-            break;
-
-        case 4: // Done - save config
-            displayManager.showSetupScreen("Setup Complete!\nPress MID\nto save & exit");
-            if (event == BTN_MID_PRESS) {
-                // Save configuration
-                setupConfig.firstTimeSetup = false;
-                storage.saveTankConfig(setupConfig);
-                storage.markSetupComplete();
-
-                #if ENABLE_SERIAL_DEBUG
-                Serial.println("Setup completed via buttons!");
-                Serial.println("Tank configuration saved");
-                #endif
-
-                displayManager.showMessage("Setup", "Complete!", 2000);
-                systemState = STATE_NORMAL_OPERATION;
-                setupStep = 0;
-            }
-            break;
+    
+    if (displayManager.handleSetupWizard(event, setupConfig)) {
+        setupConfig.firstTimeSetup = false;
+        storage.saveTankConfig(setupConfig);
+        storage.markSetupComplete();
+        
+        #if ENABLE_SERIAL_DEBUG
+        Serial.println("Setup completed via buttons!");
+        #endif
+        
+        displayManager.showMessage("Setup", "Complete!", 2000);
+        systemState = STATE_NORMAL_OPERATION;
+        displayManager.resetSetupWizard();
     }
 
-    // ✅ FIX: Check setup status only periodically (every 2 seconds) - for web interface completion
-    static unsigned long lastSetupCheck = 0;
+    // Check if setup completed via web
     if (millis() - lastSetupCheck > 2000) {
         lastSetupCheck = millis();
         
-        // Check if setup is complete
         if (!storage.isFirstTimeSetup()) {
             #if ENABLE_SERIAL_DEBUG
-            Serial.println("Setup completed! Transitioning to normal operation...");
+            Serial.println("Setup completed via web!");
             #endif
-
-            // Switch back to main screen and show completion message
+            
             displayManager.setScreen(SCREEN_MAIN);
             displayManager.showMessage("Setup", "Complete!", 2000);
-
             systemState = STATE_NORMAL_OPERATION;
-            // initializeSystem() will be called by normalOperation() on next loop
+            displayManager.resetSetupWizard();
         }
     }
 }
 
-// ==================== NORMAL OPERATION ====================
+void startNetworkForSetup() {
+    #if ENABLE_SERIAL_DEBUG
+    Serial.println("=================================");
+    Serial.println("FIRST TIME SETUP MODE");
+    #endif
+
+    String ssid, password;
+    bool hasWiFiCreds = storage.loadWiFiCredentials(ssid, password);
+
+    #if SIMULATION_MODE
+    if (!hasWiFiCreds || ssid.isEmpty()) {
+        ssid = "Wokwi-GUEST";
+        password = "";
+        #if ENABLE_SERIAL_DEBUG
+        Serial.println("MODE: SIMULATION - using Wokwi-GUEST");
+        #endif
+    }
+    wifiManager.connectToWiFi(ssid, password);
+    #else
+    if (hasWiFiCreds && !ssid.isEmpty()) {
+        #if ENABLE_SERIAL_DEBUG
+        Serial.print("Connecting to saved WiFi: ");
+        Serial.println(ssid);
+        #endif
+        wifiManager.connectToWiFi(ssid, password);
+    } else {
+        #if ENABLE_SERIAL_DEBUG
+        Serial.print("Starting AP: ");
+        Serial.println(AP_SSID);
+        #endif
+        wifiManager.startAP();
+    }
+    #endif
+
+    #if ENABLE_SERIAL_DEBUG
+    Serial.println("=================================");
+    #endif
+
+    if (!webServer.isRunning() && wifiInitialized) {
+        webServer.begin(&storage, &calculator, &pumpController, &waterTracker);
+    }
+}
+
 void normalOperation() {
-    // Initialize system on first run
     if (!systemInitialized) {
         initializeSystem();
-        return; // Skip rest of loop during initialization
+        return;
     }
 
     // Read sensor periodically
@@ -537,22 +352,24 @@ void normalOperation() {
         readSensor();
     }
     
-    // Update pump control
-    updatePumpControl();
+    // Update pump control (with or without ML)
+    if (mlModelAvailable && mlPredictor.isEnabled()) {
+        updatePumpControlWithML();
+    } else {
+        updatePumpControl();
+    }
     
-    // Update display
     updateDisplay();
     
-    // Update IoT (OPTIONAL - only if connected)
+    // Optional: WiFi and IoT updates
     if (wifiManager.isConnected()) {
         wifiManager.loop();
         
         #if IOT_ENABLED
-        if (iotClient.isConnected()) {
+        if (iotAvailable && iotClient.isConnected()) {
             iotClient.loop();
             syncManager.loop();
             
-            // Send telemetry (optional)
             if (millis() - lastTelemetrySend > TELEMETRY_SEND_INTERVAL_MS) {
                 sendTelemetry();
             }
@@ -560,34 +377,33 @@ void normalOperation() {
         #endif
     }
     
-    // Update water tracker
+    // Core functionality (always works)
     waterTracker.loop();
     waterTracker.updateState(currentWaterLevel, pumpController.isOn(), currentInflow);
-    
-    // Update pump controller
     pumpController.loop();
     
-    // Update optional features (gracefully skip if not available)
+    // Optional features
     if (webServer.isRunning()) {
         webServer.updateData(currentWaterLevel, currentInflow, maxInflow);
     }
     
-    if (otaUpdater.isAutoUpdateEnabled()) {
+    #if AUTO_OTA_ENABLED
+    if (iotAvailable && otaUpdater.isAutoUpdateEnabled()) {
         otaUpdater.loop();
     }
+    #endif
     
-    if (mlPredictor.isEnabled()) {
+    #if ML_MODEL_ENABLED
+    if (iotAvailable && mlPredictor.isEnabled()) {
         mlPredictor.loop();
     }
+    #endif
 }
 
-// ==================== CONFIGURATION MODE ====================
 void configMode() {
     static int selectedItem = 0;
     
     displayManager.showConfigMenu(selectedItem);
-    
-    // Handle config menu navigation
     ButtonEvent event = buttonHandler.getEvent();
     
     if (event == BTN_TOP_PRESS) {
@@ -595,20 +411,7 @@ void configMode() {
     } else if (event == BTN_BOTTOM_PRESS) {
         selectedItem = (selectedItem + 1) % 6;
     } else if (event == BTN_MID_PRESS) {
-        // Handle menu selection
         switch (selectedItem) {
-            case 0: // Tank Height
-                // TODO: Implement tank height configuration
-                break;
-            case 1: // Tank Dimensions
-                // TODO: Implement dimensions configuration
-                break;
-            case 2: // Thresholds
-                // TODO: Implement thresholds configuration
-                break;
-            case 3: // WiFi Setup
-                // TODO: Implement WiFi setup
-                break;
             case 4: // Factory Reset
                 displayManager.showMessage("Reset", "Hold MID 5s", 3000);
                 break;
@@ -617,21 +420,18 @@ void configMode() {
                 break;
         }
     } else if (event == BTN_MID_LONG_PRESS && selectedItem == 4) {
-        // Factory reset
         displayManager.showMessage("Reset", "Resetting...", 3000);
         storage.factoryReset();
-        delay(1000); // Brief delay before restart
+        delay(1000);
         ESP.restart();
     }
 }
 
-// ==================== BUTTON EVENT HANDLING ====================
 void handleButtonEvents() {
     ButtonEvent event = buttonHandler.getEvent();
 
     if (event == BTN_NONE) return;
 
-    // Don't allow screen switching during first-time setup
     if (systemState == STATE_FIRST_TIME_SETUP) {
         return;
     }
@@ -655,14 +455,12 @@ void handleButtonEvents() {
             if (pumpController.getMode() == MANUAL_MODE || pumpController.getMode() == OVERRIDE_MODE) {
                 pumpController.toggleManual();
             } else {
-                // Switch to manual mode
                 pumpController.setMode(MANUAL_MODE);
                 pumpController.toggleManual();
             }
             break;
             
         case BTN_MANUAL_SWITCH_LONG_PRESS:
-            // Enter/exit override mode
             if (pumpController.getMode() == OVERRIDE_MODE) {
                 pumpController.exitOverrideMode();
                 displayManager.showMessage("Mode", "AUTO Mode", 2000);
@@ -677,7 +475,6 @@ void handleButtonEvents() {
     }
 }
 
-// ==================== SENSOR READING ====================
 void readSensor() {
     lastSensorRead = millis();
     
@@ -690,15 +487,12 @@ void readSensor() {
         return;
     }
     
-    // Update water level
     previousWaterLevel = currentWaterLevel;
     currentWaterLevel = calculator.distanceToLevel(distance);
     
-    // Calculate inflow
     unsigned long deltaTime = millis() - lastSensorRead;
     currentInflow = calculator.calculateInflow(currentWaterLevel, previousWaterLevel, deltaTime);
     
-    // Update max inflow
     if (currentInflow > maxInflow) {
         maxInflow = currentInflow;
         currentConfig.maxInflow = maxInflow;
@@ -715,20 +509,16 @@ void readSensor() {
     #endif
 }
 
-// ==================== PUMP CONTROL ====================
 void updatePumpControl() {
-    // Safety checks
-    pumpController.updateSafetyCheck(currentWaterLevel, previousWaterLevel, 
-                                     SENSOR_SAMPLE_INTERVAL_MS);
+    // Safety checks (always active)
+    pumpController.updateSafetyCheck(currentWaterLevel, previousWaterLevel, SENSOR_SAMPLE_INTERVAL_MS);
     
     // Automatic control if in AUTO mode
     if (pumpController.getMode() == AUTO_MODE) {
-        pumpController.autoControl(currentWaterLevel, 
-                                   currentConfig.upperThreshold, 
-                                   currentConfig.lowerThreshold);
+        pumpController.autoControl(currentWaterLevel, currentConfig.upperThreshold, currentConfig.lowerThreshold);
     }
     
-    // Save pump cycle data
+    // Log pump cycles
     if (pumpController.getLastStateChangeTime() > 0) {
         PumpCycle cycle;
         cycle.timestamp = millis();
@@ -739,7 +529,61 @@ void updatePumpControl() {
     }
 }
 
-// ==================== DISPLAY UPDATE ====================
+void updatePumpControlWithML() {
+    // Safety checks (always active)
+    pumpController.updateSafetyCheck(currentWaterLevel, previousWaterLevel, SENSOR_SAMPLE_INTERVAL_MS);
+    
+    // Use ML prediction if in AUTO mode
+    if (pumpController.getMode() == AUTO_MODE && millis() - lastMLPrediction > ML_PREDICTION_INTERVAL_MS) {
+        lastMLPrediction = millis();
+        
+        // Prepare ML input
+        MLInput mlInput;
+        int hour, minute, second;
+        TimeUtils::getCurrentTime(hour, minute, second);
+        mlInput.hourOfDay = hour;
+        mlInput.dayOfWeek = TimeUtils::getDayOfWeek();
+        mlInput.currentLevel = currentWaterLevel;
+        mlInput.recentUsageRate = waterTracker.getTodayUsage() / (hour + 1); // L/hour
+        mlInput.timeSinceLastFill = (millis() - pumpController.getLastStateChangeTime()) / 60000; // minutes
+        mlInput.avgUsageSameHour = 0; // TODO: Calculate from historical data
+        mlInput.isWeekend = (mlInput.dayOfWeek == 0 || mlInput.dayOfWeek == 6);
+        
+        // Get prediction
+        MLPrediction prediction = mlPredictor.predict(mlInput);
+        
+        #if ENABLE_SERIAL_DEBUG
+        Serial.print("ML Prediction - Should turn on: ");
+        Serial.print(prediction.shouldTurnOn ? "YES" : "NO");
+        Serial.print(", Confidence: ");
+        Serial.println(prediction.confidence);
+        #endif
+        
+        // Act on prediction with confidence threshold
+        if (prediction.confidence > 0.7) { // Only act if confident
+            if (prediction.shouldTurnOn && !pumpController.isOn()) {
+                pumpController.turnOn();
+            }
+        } else {
+            // Fallback to threshold-based control if low confidence
+            pumpController.autoControl(currentWaterLevel, currentConfig.upperThreshold, currentConfig.lowerThreshold);
+        }
+    } else if (pumpController.getMode() == AUTO_MODE) {
+        // Between predictions, use threshold-based control
+        pumpController.autoControl(currentWaterLevel, currentConfig.upperThreshold, currentConfig.lowerThreshold);
+    }
+    
+    // Log pump cycles
+    if (pumpController.getLastStateChangeTime() > 0) {
+        PumpCycle cycle;
+        cycle.timestamp = millis();
+        cycle.motorState = pumpController.isOn();
+        cycle.waterLevel = currentWaterLevel;
+        cycle.inflow = currentInflow;
+        storage.savePumpCycle(cycle);
+    }
+}
+
 void updateDisplay() {
     DisplayData data;
     data.waterLevel = currentWaterLevel;
@@ -751,14 +595,13 @@ void updateDisplay() {
     data.dailyUsage = waterTracker.getTodayUsage();
     data.monthlyUsage = waterTracker.getMonthUsage();
     data.wifiStatus = wifiManager.isConnected() ? "Connected" : "Disconnected";
-    data.iotStatus = iotClient.isConnected() ? "Online" : "Offline";
+    data.iotStatus = (iotAvailable && iotClient.isConnected()) ? "Online" : "Offline";
     data.dryRunAlarm = pumpController.isDryRunDetected();
     data.overflowAlarm = pumpController.isOverflowRisk();
     
     displayManager.updateData(data);
 }
 
-// ==================== IOT COMMAND HANDLING ====================
 void handleIoTCommands(const CommandData& cmd) {
     #if ENABLE_SERIAL_DEBUG
     Serial.print("Received IoT command: ");
@@ -777,6 +620,13 @@ void handleIoTCommands(const CommandData& cmd) {
         handleIoTConfig(cmd.payload);
     } else if (cmd.command == "reset_safety") {
         pumpController.resetSafetyAlarms();
+    } else if (cmd.command == "download_ml_model") {
+        #if ML_MODEL_ENABLED
+        if (mlPredictor.downloadModel()) {
+            displayManager.showMessage("ML", "Model Updated", 2000);
+            mlModelAvailable = mlPredictor.isReady();
+        }
+        #endif
     } else if (cmd.command == "restart") {
         displayManager.showMessage("System", "Restarting...", 2000);
         delay(2000);
@@ -784,22 +634,18 @@ void handleIoTCommands(const CommandData& cmd) {
     }
 }
 
-// ==================== IOT CONFIG HANDLING ====================
 void handleIoTConfig(const String& configJson) {
     #if ENABLE_SERIAL_DEBUG
     Serial.println("Received config update from cloud");
     #endif
     
     syncManager.onCloudConfigReceived(configJson);
-    
-    // Reload config
     currentConfig = storage.loadTankConfig();
     calculator.setTankConfig(currentConfig);
 }
 
-// ==================== TELEMETRY SENDING ====================
 void sendTelemetry() {
-    if (!iotClient.isConnected()) return;
+    if (!iotAvailable || !iotClient.isConnected()) return;
     
     TelemetryData telemetry;
     telemetry.timestamp = millis();

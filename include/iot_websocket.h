@@ -6,21 +6,7 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include "storage_manager.h"
-
-struct TelemetryData {
-    unsigned long timestamp;
-    bool motorState;
-    float waterLevel;
-    float currentInflow;
-    float maxInflow;
-    float dailyUsage;
-    float monthlyUsage;
-};
-
-struct CommandData {
-    String command;
-    String payload;
-};
+#include "iot_types.h"
 
 class IoTWebSocket {
 public:
@@ -28,27 +14,16 @@ public:
     bool begin(const String& url, int port, const String& path, const String& deviceToken);
     void loop();
     
-    // Connection management
     bool connect();
     bool isConnected();
     void disconnect();
     
-    // Send telemetry
     bool sendTelemetry(const TelemetryData& data);
-    
-    // Send status
     bool sendStatus(const String& status);
-    
-    // Send config (for syncing)
     bool sendConfig(const TankConfig& config);
-    
-    // Request config from server
     bool requestConfig();
     
-    // Set callback for received commands
     void setCommandCallback(void (*callback)(const CommandData& cmd));
-    
-    // Set callback for received config
     void setConfigCallback(void (*callback)(const String& configJson));
     
 private:
@@ -70,4 +45,3 @@ private:
 };
 
 #endif // IOT_WEBSOCKET_H
-

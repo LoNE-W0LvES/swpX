@@ -71,9 +71,6 @@
 #define TELEMETRY_SEND_INTERVAL_MS 10000    // Send telemetry every 10s (if connected)
 #define GRACEFUL_IOT_FAILURE true           // Continue if IoT fails ✅
 
-// ==================== SYNC MODE ====================
-#define DEFAULT_SYNC_MODE DEVICE_PRIORITY   // ✅ FIXED: Use enum value directly
-
 // ==================== ML MODEL CONFIGURATION ====================
 // ML model is OPTIONAL - system works without it
 #define ML_MODEL_ENABLED false              // Disabled until model available

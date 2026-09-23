@@ -2,6 +2,7 @@
 #include "display_manager.h"
 #include "config.h"
 #include "pins.h"
+#include "button_handler.h"
 
 DisplayManager::DisplayManager()
     : _display(DISPLAY_WIDTH, DISPLAY_HEIGHT, &Wire, OLED_RESET),
@@ -10,7 +11,12 @@ DisplayManager::DisplayManager()
       _lastActivity(0),
       _isDimmed(false),
       _messageEndTime(0),
-      _setupPrompt("") {
+      _setupPrompt(""),
+      _setupStep(0),
+      _setupDoingWidth(false),
+      _setupDoingUpper(false),
+      _setupTempValue(0),
+      _setupComplete(false) {
 }
 
 bool DisplayManager::begin() {
@@ -35,22 +41,19 @@ bool DisplayManager::begin() {
 }
 
 void DisplayManager::loop() {
-    // Check for display timeout
     if (millis() - _lastActivity > (DISPLAY_TIMEOUT_SECONDS * 1000) && !_isDimmed) {
         dimDisplay();
     }
     
-    // Handle temporary messages
     if (_messageEndTime > 0 && millis() > _messageEndTime) {
         _messageEndTime = 0;
-        updateData(_data); // Refresh normal display
+        updateData(_data);
     }
     
-    // Update display at regular intervals
     if (millis() - _lastUpdate > DISPLAY_UPDATE_INTERVAL_MS) {
         _lastUpdate = millis();
 
-        if (_messageEndTime == 0) { // Only update if no temporary message
+        if (_messageEndTime == 0) {
             switch (_currentScreen) {
                 case SCREEN_MAIN:
                     drawMainScreen();
@@ -89,7 +92,7 @@ DisplayScreen DisplayManager::getCurrentScreen() {
 
 void DisplayManager::nextScreen() {
     int screen = (int)_currentScreen;
-    screen = (screen + 1) % 3; // Cycle through 3 main screens
+    screen = (screen + 1) % 3;
     _currentScreen = (DisplayScreen)screen;
     _lastActivity = millis();
 }
@@ -105,12 +108,10 @@ void DisplayManager::showMessage(const String& title, const String& message, int
     _display.clearDisplay();
     _display.setTextSize(1);
     
-    // Draw title
     _display.setCursor(0, 0);
     _display.println(title);
     _display.drawLine(0, 10, DISPLAY_WIDTH, 10, SSD1306_WHITE);
     
-    // Draw message (word wrap)
     _display.setCursor(0, 16);
     _display.println(message);
     
@@ -129,7 +130,6 @@ void DisplayManager::showProgress(const String& title, int percent) {
     _display.setCursor(0, 0);
     _display.println(title);
     
-    // Progress bar
     int barWidth = DISPLAY_WIDTH - 4;
     int barHeight = 16;
     int fillWidth = (barWidth * percent) / 100;
@@ -137,7 +137,6 @@ void DisplayManager::showProgress(const String& title, int percent) {
     _display.drawRect(2, 20, barWidth, barHeight, SSD1306_WHITE);
     _display.fillRect(3, 21, fillWidth - 2, barHeight - 2, SSD1306_WHITE);
     
-    // Percentage text
     _display.setCursor(50, 45);
     _display.print(percent);
     _display.println("%");
@@ -177,20 +176,162 @@ void DisplayManager::wakeDisplay() {
     _isDimmed = false;
 }
 
+// Setup wizard functionality
+void DisplayManager::resetSetupWizard() {
+    _setupStep = 0;
+    _setupDoingWidth = false;
+    _setupDoingUpper = false;
+    _setupTempValue = 0;
+    _setupComplete = false;
+}
+
+bool DisplayManager::isSetupComplete() {
+    return _setupComplete;
+}
+
+bool DisplayManager::handleSetupWizard(ButtonEvent event, TankConfig& config) {
+    // Initialize config on first call
+    static bool initialized = false;
+    if (!initialized) {
+        initialized = true;
+        config.shape = RECTANGULAR;
+        config.tankHeight = 100.0;
+        config.tankLength = 100.0;
+        config.tankWidth = 100.0;
+        config.tankRadius = 50.0;
+        config.upperThreshold = DEFAULT_UPPER_THRESHOLD;
+        config.lowerThreshold = DEFAULT_LOWER_THRESHOLD;
+        _setupStep = 0;
+        _setupTempValue = 0;
+    }
+
+    switch (_setupStep) {
+        case 0: // Tank shape
+            showSetupScreen("Tank Shape:\n" + String(config.shape == RECTANGULAR ? ">Rectangular" : " Rectangular") + 
+                          "\n" + String(config.shape == CYLINDRICAL ? ">Cylindrical" : " Cylindrical") + "\nMID=Select");
+            if (event == BTN_TOP_PRESS || event == BTN_BOTTOM_PRESS) {
+                config.shape = (config.shape == RECTANGULAR) ? CYLINDRICAL : RECTANGULAR;
+            } else if (event == BTN_MID_PRESS) {
+                _setupStep = 1;
+                _setupTempValue = config.tankHeight;
+            }
+            break;
+
+        case 1: // Tank height
+            showSetupScreen("Tank Height:\n" + String(_setupTempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
+            if (event == BTN_TOP_PRESS) {
+                _setupTempValue += 10.0;
+                if (_setupTempValue > 500) _setupTempValue = 500;
+            } else if (event == BTN_BOTTOM_PRESS) {
+                _setupTempValue -= 10.0;
+                if (_setupTempValue < 10) _setupTempValue = 10;
+            } else if (event == BTN_MID_PRESS) {
+                config.tankHeight = _setupTempValue;
+                _setupStep = 2;
+                _setupTempValue = (config.shape == RECTANGULAR) ? config.tankLength : config.tankRadius;
+            }
+            break;
+
+        case 2: // Tank dimensions
+            if (config.shape == RECTANGULAR) {
+                if (!_setupDoingWidth) {
+                    showSetupScreen("Tank Length:\n" + String(_setupTempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
+                    if (event == BTN_TOP_PRESS) {
+                        _setupTempValue += 10.0;
+                        if (_setupTempValue > 500) _setupTempValue = 500;
+                    } else if (event == BTN_BOTTOM_PRESS) {
+                        _setupTempValue -= 10.0;
+                        if (_setupTempValue < 10) _setupTempValue = 10;
+                    } else if (event == BTN_MID_PRESS) {
+                        config.tankLength = _setupTempValue;
+                        _setupTempValue = config.tankWidth;
+                        _setupDoingWidth = true;
+                    }
+                } else {
+                    showSetupScreen("Tank Width:\n" + String(_setupTempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
+                    if (event == BTN_TOP_PRESS) {
+                        _setupTempValue += 10.0;
+                        if (_setupTempValue > 500) _setupTempValue = 500;
+                    } else if (event == BTN_BOTTOM_PRESS) {
+                        _setupTempValue -= 10.0;
+                        if (_setupTempValue < 10) _setupTempValue = 10;
+                    } else if (event == BTN_MID_PRESS) {
+                        config.tankWidth = _setupTempValue;
+                        _setupDoingWidth = false;
+                        _setupStep = 3;
+                        _setupTempValue = config.lowerThreshold;
+                    }
+                }
+            } else { // Cylindrical
+                showSetupScreen("Tank Radius:\n" + String(_setupTempValue, 1) + " cm\nUP/DOWN adjust\nMID=Confirm");
+                if (event == BTN_TOP_PRESS) {
+                    _setupTempValue += 10.0;
+                    if (_setupTempValue > 250) _setupTempValue = 250;
+                } else if (event == BTN_BOTTOM_PRESS) {
+                    _setupTempValue -= 10.0;
+                    if (_setupTempValue < 5) _setupTempValue = 5;
+                } else if (event == BTN_MID_PRESS) {
+                    config.tankRadius = _setupTempValue;
+                    _setupStep = 3;
+                    _setupTempValue = config.lowerThreshold;
+                }
+            }
+            break;
+
+        case 3: // Thresholds
+            if (!_setupDoingUpper) {
+                showSetupScreen("Lower Threshold:\n" + String(_setupTempValue, 0) + " %\nUP/DOWN adjust\nMID=Confirm");
+                if (event == BTN_TOP_PRESS) {
+                    _setupTempValue += 5.0;
+                    if (_setupTempValue > 95) _setupTempValue = 95;
+                } else if (event == BTN_BOTTOM_PRESS) {
+                    _setupTempValue -= 5.0;
+                    if (_setupTempValue < 5) _setupTempValue = 5;
+                } else if (event == BTN_MID_PRESS) {
+                    config.lowerThreshold = _setupTempValue;
+                    _setupTempValue = config.upperThreshold;
+                    _setupDoingUpper = true;
+                }
+            } else {
+                showSetupScreen("Upper Threshold:\n" + String(_setupTempValue, 0) + " %\nUP/DOWN adjust\nMID=Confirm");
+                if (event == BTN_TOP_PRESS) {
+                    _setupTempValue += 5.0;
+                    if (_setupTempValue > 100) _setupTempValue = 100;
+                } else if (event == BTN_BOTTOM_PRESS) {
+                    _setupTempValue -= 5.0;
+                    if (_setupTempValue < config.lowerThreshold + 5) _setupTempValue = config.lowerThreshold + 5;
+                } else if (event == BTN_MID_PRESS) {
+                    config.upperThreshold = _setupTempValue;
+                    _setupDoingUpper = false;
+                    _setupStep = 4;
+                }
+            }
+            break;
+
+        case 4: // Done
+            showSetupScreen("Setup Complete!\nPress MID\nto save & exit");
+            if (event == BTN_MID_PRESS) {
+                _setupComplete = true;
+                initialized = false;
+                return true; // Setup complete
+            }
+            break;
+    }
+    
+    return false; // Setup not yet complete
+}
+
 void DisplayManager::drawMainScreen() {
     _display.clearDisplay();
     
-    // Title
     _display.setTextSize(1);
     _display.setCursor(0, 0);
     _display.print("Water Level: ");
     _display.print(formatFloat(_data.waterLevel));
     _display.println("%");
     
-    // Tank visualization
     drawTankLevel(10, 12, 30, 48, _data.waterLevel);
     
-    // Status info
     _display.setCursor(50, 12);
     _display.print("Pump: ");
     _display.println(_data.motorState ? "ON" : "OFF");
@@ -208,7 +349,6 @@ void DisplayManager::drawMainScreen() {
         _display.println("AUTO");
     }
     
-    // Alarms
     if (_data.dryRunAlarm) {
         _display.setCursor(50, 42);
         _display.println("DRY RUN!");
@@ -310,21 +450,15 @@ void DisplayManager::drawSetupScreen(const String& prompt) {
     _display.setCursor(0, 20);
     _display.println(prompt);
     
-    _display.setCursor(0, 50);
-    _display.println("Use buttons");
-    
     _display.display();
 }
 
 void DisplayManager::drawTankLevel(int x, int y, int width, int height, float level) {
-    // Draw tank outline
     _display.drawRect(x, y, width, height, SSD1306_WHITE);
     
-    // Calculate fill height
     int fillHeight = (height - 2) * level / 100.0;
     int fillY = y + height - fillHeight - 1;
     
-    // Draw water level
     if (fillHeight > 0) {
         _display.fillRect(x + 1, fillY, width - 2, fillHeight, SSD1306_WHITE);
     }
